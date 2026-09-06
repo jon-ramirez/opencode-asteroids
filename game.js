@@ -5,8 +5,9 @@ const ctx = canvas.getContext('2d');
 const W = 800;
 const H = 600;
 
-const BOOST_DURATION = 5;   // segundos de boost que otorga cada pickup
-const BOOST_FACTOR   = 2;   // multiplicador de empuje durante el boost
+const BOOST_DURATION  = 5;   // segundos de boost que otorga cada pickup
+const BOOST_FACTOR    = 2;   // multiplicador de empuje durante el boost
+const TRIPLE_DURATION = 5;   // segundos de disparo triple que otorga cada pickup
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {};
@@ -142,6 +143,8 @@ class Ship {
     this.dead          = false;
     this.boost         = 0;   // segundos de boost restantes
     this.boostMax      = 0;   // total acumulado (referencia de la barra del HUD)
+    this.triple        = 0;   // segundos de disparo triple restantes
+    this.tripleMax     = 0;   // total acumulado (referencia de la barra del HUD)
   }
 
   update(dt) {
@@ -151,6 +154,10 @@ class Ship {
     if (this.boost > 0) {
       this.boost -= dt;
       if (this.boost <= 0) { this.boost = 0; this.boostMax = 0; }
+    }
+    if (this.triple > 0) {
+      this.triple -= dt;
+      if (this.triple <= 0) { this.triple = 0; this.tripleMax = 0; }
     }
 
     const ROT   = 3.5;   // rad/s
@@ -184,6 +191,13 @@ class Ship {
     const NOSE = 21;
     const ox = this.x + Math.cos(this.angle) * NOSE;
     const oy = this.y + Math.sin(this.angle) * NOSE;
+
+    // Con disparo triple: 3 balas paralelas, desplazadas perpendicularmente
+    if (this.triple > 0) {
+      const px = -Math.sin(this.angle);
+      const py =  Math.cos(this.angle);
+      return [-9, 0, 9].map(off => new Bullet(ox + px * off, oy + py * off, this.angle));
+    }
     return [new Bullet(ox, oy, this.angle)];
   }
 
@@ -256,9 +270,10 @@ class Particle {
   }
 }
 
-// ── Power-up de velocidad ─────────────────────────────────────────────────────
+// ── Power-ups (velocidad y disparo triple) ────────────────────────────────────
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type = 'boost') {
+    this.type = type;
     this.x = x;
     this.y = y;
     this.radius = 10;
@@ -292,15 +307,25 @@ class PowerUp {
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
-    // Doble chevron «»
-    ctx.beginPath();
-    ctx.moveTo(-10, -7);
-    ctx.lineTo(-3, 0);
-    ctx.lineTo(-10, 7);
-    ctx.moveTo(1, -7);
-    ctx.lineTo(8, 0);
-    ctx.lineTo(1, 7);
-    ctx.stroke();
+    if (this.type === 'triple') {
+      // Tres trazos verticales paralelos «|||»
+      ctx.beginPath();
+      for (const dx of [-8, 0, 8]) {
+        ctx.moveTo(dx, -6);
+        ctx.lineTo(dx, 6);
+      }
+      ctx.stroke();
+    } else {
+      // Doble chevron «»
+      ctx.beginPath();
+      ctx.moveTo(-10, -7);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-10, 7);
+      ctx.moveTo(1, -7);
+      ctx.lineTo(8, 0);
+      ctx.lineTo(1, 7);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }
@@ -464,6 +489,8 @@ function killShip() {
   ship.dead = true;
   ship.boost    = 0;   // el boost se pierde al morir
   ship.boostMax = 0;
+  ship.triple    = 0;  // el disparo triple también se pierde al morir
+  ship.tripleMax = 0;
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -526,7 +553,8 @@ function update(dt) {
         a.dead = true;
         score += POINTS[a.size];
         explode(a.x, a.y, a.size * 5);
-        if (Math.random() < 0.15) powerups.push(new PowerUp(a.x, a.y));
+        if (Math.random() < 0.15)
+          powerups.push(new PowerUp(a.x, a.y, Math.random() < 0.5 ? 'boost' : 'triple'));
         newAsteroids.push(...a.split());
       }
     }
@@ -576,8 +604,13 @@ function update(dt) {
     for (const pu of powerups) {
       if (dist(ship, pu) < ship.radius + pu.radius) {
         pu.dead = true;
-        ship.boost += BOOST_DURATION;
-        ship.boostMax = ship.boost;   // la barra nace llena
+        if (pu.type === 'triple') {
+          ship.triple += TRIPLE_DURATION;
+          ship.tripleMax = ship.triple;   // la barra nace llena
+        } else {
+          ship.boost += BOOST_DURATION;
+          ship.boostMax = ship.boost;     // la barra nace llena
+        }
         explode(pu.x, pu.y, 6);
       }
     }
@@ -619,19 +652,34 @@ function drawHUD() {
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
 
-  // Indicador de boost activo: texto + barra de tiempo restante
+  // Indicadores de efectos activos: texto + barra de tiempo restante
+  let barY = 48;
   if (ship.boost > 0) {
     ctx.fillStyle = 'rgb(0, 200, 255)';
     ctx.font = '15px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(`VELOCIDAD ${ship.boost.toFixed(1)}s`, 14, 48);
+    ctx.fillText(`VELOCIDAD ${ship.boost.toFixed(1)}s`, 14, barY);
 
     const BW = 120, BH = 6;
     const frac = ship.boost / ship.boostMax;
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1;
-    ctx.strokeRect(14, 54, BW, BH);
-    ctx.fillRect(15, 55, (BW - 2) * frac, BH - 2);
+    ctx.strokeRect(14, barY + 6, BW, BH);
+    ctx.fillRect(15, barY + 7, (BW - 2) * frac, BH - 2);
+    barY += 22;
+  }
+  if (ship.triple > 0) {
+    ctx.fillStyle = 'rgb(255, 60, 60)';
+    ctx.font = '15px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`TRIPLE ${ship.triple.toFixed(1)}s`, 14, barY);
+
+    const BW = 120, BH = 6;
+    const frac = ship.triple / ship.tripleMax;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(14, barY + 6, BW, BH);
+    ctx.fillRect(15, barY + 7, (BW - 2) * frac, BH - 2);
   }
 }
 
