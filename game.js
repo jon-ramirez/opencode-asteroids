@@ -8,6 +8,10 @@ const H = 600;
 const BOOST_DURATION = 5;   // segundos de boost que otorga cada pickup
 const BOOST_FACTOR   = 2;   // multiplicador de empuje durante el boost
 
+const SHIELD_DURATION = 5;    // segundos de escudo que otorga cada pickup
+const SHIELD_HIT_COST = 1.5;  // tiempo de escudo consumido por impacto físico
+const SHIELD_RADIUS   = 24;   // radio de protección alrededor de la nave
+
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {};
 const justPressed = {};
@@ -34,14 +38,15 @@ const randInt = (min, max) => Math.floor(rand(min, max + 1));
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 class Bullet {
-  constructor(x, y, angle) {
+  constructor(x, y, angle, enemy = false) {
     this.x = x;
     this.y = y;
-    const SPEED = 520;
+    this.enemy = enemy;
+    const SPEED = enemy ? ENEMY_BULLET_SPEED : 520;
     this.vx = Math.cos(angle) * SPEED;
     this.vy = Math.sin(angle) * SPEED;
-    this.ttl  = 1.1;
-    this.radius = 2;
+    this.ttl  = enemy ? 2 : 1.1;
+    this.radius = enemy ? 2.5 : 2;
     this.dead = false;
   }
 
@@ -53,7 +58,8 @@ class Bullet {
   }
 
   draw() {
-    ctx.fillStyle = '#fff';
+    // Las balas enemigas se distinguen por su color rojizo
+    ctx.fillStyle = this.enemy ? 'rgb(255,80,80)' : '#fff';
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
     ctx.fill();
@@ -68,6 +74,10 @@ const POINTS = [0, 100, 50, 20];  // puntos por tamaño
 const ENEMY_SPEED  = SPEEDS[1] * 2;   // nave enemiga: el doble de rápida que un asteroide pequeño
 const ENEMY_POINTS = POINTS[1] * 3;   // nave enemiga: el triple de puntos que un asteroide pequeño
 const ENEMY_TTL    = 5;               // segundos que dura en pantalla
+
+const ENEMY_FIRE_MIN     = 0.9;   // cadencia de disparo: intervalo mínimo (s)
+const ENEMY_FIRE_MAX     = 1.4;   // cadencia de disparo: intervalo máximo (s)
+const ENEMY_BULLET_SPEED = 300;   // velocidad de las balas enemigas (px/s)
 
 class Asteroid {
   constructor(x, y, size = 3) {
@@ -210,6 +220,8 @@ class Ship {
     this.dead          = false;
     this.boost         = 0;   // segundos de boost restantes
     this.boostMax      = 0;   // total acumulado (referencia de la barra del HUD)
+    this.shield        = 0;   // segundos de escudo restantes
+    this.shieldMax     = 0;   // total acumulado (referencia de la barra del HUD)
   }
 
   update(dt) {
@@ -219,6 +231,10 @@ class Ship {
     if (this.boost > 0) {
       this.boost -= dt;
       if (this.boost <= 0) { this.boost = 0; this.boostMax = 0; }
+    }
+    if (this.shield > 0) {
+      this.shield -= dt;
+      if (this.shield <= 0) { this.shield = 0; this.shieldMax = 0; }
     }
 
     const ROT   = 3.5;   // rad/s
@@ -285,6 +301,16 @@ class Ship {
     }
 
     ctx.restore();
+
+    // Escudo activo: círculo cian pulsante alrededor de la nave
+    if (this.shield > 0) {
+      const pulse = 0.55 + 0.3 * Math.sin(Date.now() / 160);
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, SHIELD_RADIUS, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(0,200,255,${pulse.toFixed(2)})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
   }
 }
 
@@ -321,9 +347,10 @@ class Particle {
   }
 }
 
-// ── Power-up de velocidad ─────────────────────────────────────────────────────
+// ── Power-ups: boost de velocidad y escudo ────────────────────────────────────
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type = 'boost') {
+    this.type = type;
     this.x = x;
     this.y = y;
     this.radius = 10;
@@ -357,15 +384,30 @@ class PowerUp {
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
-    // Doble chevron «»
-    ctx.beginPath();
-    ctx.moveTo(-10, -7);
-    ctx.lineTo(-3, 0);
-    ctx.lineTo(-10, 7);
-    ctx.moveTo(1, -7);
-    ctx.lineTo(8, 0);
-    ctx.lineTo(1, 7);
-    ctx.stroke();
+    if (this.type === 'shield') {
+      // Hexágono del escudo, en cian como el propio escudo
+      ctx.strokeStyle = 'rgb(0, 200, 255)';
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
+        const px = Math.cos(a) * 9;
+        const py = Math.sin(a) * 9;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    } else {
+      // Doble chevron «»
+      ctx.beginPath();
+      ctx.moveTo(-10, -7);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-10, 7);
+      ctx.moveTo(1, -7);
+      ctx.lineTo(8, 0);
+      ctx.lineTo(1, 7);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }
@@ -380,6 +422,7 @@ class EnemyShip {
     this.ttl    = ENEMY_TTL;
     this.angle     = rand(0, Math.PI * 2);
     this.turnTimer = rand(0.3, 0.7);   // zigzag: nueva dirección al agotarse
+    this.fireTimer = rand(ENEMY_FIRE_MIN, ENEMY_FIRE_MAX);   // cuándo disparar
   }
 
   update(dt) {
@@ -392,6 +435,16 @@ class EnemyShip {
     this.y = wrap(this.y + Math.sin(this.angle) * ENEMY_SPEED * dt, H);
     this.ttl -= dt;
     if (this.ttl <= 0) this.dead = true;   // se desvanece sin explotar
+
+    // Dispara balas dirigidas a la nave del jugador
+    if (!ship.dead) {
+      this.fireTimer -= dt;
+      if (this.fireTimer <= 0) {
+        this.fireTimer = rand(ENEMY_FIRE_MIN, ENEMY_FIRE_MAX);
+        const aim = Math.atan2(ship.y - this.y, ship.x - this.x) + rand(-0.08, 0.08);
+        bullets.push(new Bullet(this.x, this.y, aim, true));
+      }
+    }
   }
 
   draw() {
@@ -535,6 +588,8 @@ function killShip() {
   ship.dead = true;
   ship.boost    = 0;   // el boost se pierde al morir
   ship.boostMax = 0;
+  ship.shield    = 0;  // el escudo se pierde al morir
+  ship.shieldMax = 0;
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -600,16 +655,18 @@ function update(dt) {
   powerups   = powerups.filter(pu => !pu.dead);
   enemies    = enemies.filter(e => !e.dead);
 
-  // Bala vs asteroide
+  // Bala vs asteroide (las balas enemigas solo mueren, no destruyen)
   const newAsteroids = [];
   for (const b of bullets) {
     for (const a of asteroids) {
       if (!a.dead && !b.dead && dist(b, a) < a.radius) {
         b.dead = true;
+        if (b.enemy) { explode(b.x, b.y, 3); continue; }
         a.dead = true;
         score += POINTS[a.size];
         explode(a.x, a.y, a.size * 5);
-        if (Math.random() < 0.15) powerups.push(new PowerUp(a.x, a.y));
+        if (Math.random() < 0.15)
+          powerups.push(new PowerUp(a.x, a.y, Math.random() < 0.5 ? 'boost' : 'shield'));
         newAsteroids.push(...a.split());
       }
     }
@@ -617,8 +674,9 @@ function update(dt) {
   asteroids = asteroids.filter(a => !a.dead).concat(newAsteroids);
   bullets   = bullets.filter(b => !b.dead);
 
-  // Bala vs nave enemiga
+  // Bala del jugador vs nave enemiga
   for (const b of bullets) {
+    if (b.enemy) continue;
     for (const e of enemies) {
       if (!e.dead && !b.dead && dist(b, e) < e.radius) {
         b.dead = true;
@@ -631,14 +689,44 @@ function update(dt) {
   bullets = bullets.filter(b => !b.dead);
   enemies = enemies.filter(e => !e.dead);
 
-  // Nave vs asteroide
-  if (ship.invincible <= 0) {
-    for (const a of asteroids) {
-      if (dist(ship, a) < ship.radius + a.radius * 0.82) {
+  // Bala enemiga vs nave
+  if (!ship.dead) {
+    for (const b of bullets) {
+      if (!b.enemy || b.dead) continue;
+      if (ship.shield > 0) {
+        if (dist(b, ship) < SHIELD_RADIUS + b.radius) {
+          b.dead = true;
+          explode(b.x, b.y, 3);   // chispas del impacto absorbido
+        }
+      } else if (ship.invincible <= 0 && dist(b, ship) < ship.radius + b.radius) {
+        b.dead = true;
         killShip();
         break;
       }
     }
+    bullets = bullets.filter(b => !b.dead);
+  }
+
+  // Nave vs asteroide
+  if (!ship.dead && ship.invincible <= 0) {
+    const splits = [];
+    for (const a of asteroids) {
+      if (a.dead) continue;
+      if (dist(ship, a) < ship.radius + a.radius * 0.82) {
+        if (ship.shield > 0) {
+          // El escudo destruye el asteroide y absorbe el impacto
+          ship.shield = Math.max(0, ship.shield - SHIELD_HIT_COST);
+          if (ship.shield === 0) ship.shieldMax = 0;
+          a.dead = true;
+          explode(a.x, a.y, a.size * 5);
+          splits.push(...a.split());
+        } else {
+          killShip();
+          break;
+        }
+      }
+    }
+    asteroids = asteroids.filter(a => !a.dead).concat(splits);
   }
 
   // Nave vs nave enemiga
@@ -647,8 +735,14 @@ function update(dt) {
       if (dist(ship, e) < ship.radius + e.radius * 0.82) {
         e.dead = true;
         bigExplosion(e.x, e.y);
-        killShip();
-        break;
+        if (ship.shield > 0) {
+          // El escudo absorbe la embestida
+          ship.shield = Math.max(0, ship.shield - SHIELD_HIT_COST);
+          if (ship.shield === 0) ship.shieldMax = 0;
+        } else {
+          killShip();
+          break;
+        }
       }
     }
     enemies = enemies.filter(e => !e.dead);
@@ -659,8 +753,13 @@ function update(dt) {
     for (const pu of powerups) {
       if (dist(ship, pu) < ship.radius + pu.radius) {
         pu.dead = true;
-        ship.boost += BOOST_DURATION;
-        ship.boostMax = ship.boost;   // la barra nace llena
+        if (pu.type === 'shield') {
+          ship.shield += SHIELD_DURATION;
+          ship.shieldMax = ship.shield;   // la barra nace llena
+        } else {
+          ship.boost += BOOST_DURATION;
+          ship.boostMax = ship.boost;     // la barra nace llena
+        }
         explode(pu.x, pu.y, 6);
       }
     }
@@ -711,6 +810,21 @@ function drawHUD() {
     ctx.lineWidth = 1;
     ctx.strokeRect(14, 54, BW, BH);
     ctx.fillRect(15, 55, (BW - 2) * frac, BH - 2);
+  }
+
+  // Indicador de escudo activo: texto + barra de tiempo restante
+  if (ship.shield > 0) {
+    ctx.fillStyle = 'rgb(0, 200, 255)';
+    ctx.font = '15px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`ESCUDO ${ship.shield.toFixed(1)}s`, 14, 70);
+
+    const BW = 120, BH = 6;
+    const frac = ship.shield / ship.shieldMax;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(14, 76, BW, BH);
+    ctx.fillRect(15, 77, (BW - 2) * frac, BH - 2);
   }
 }
 
