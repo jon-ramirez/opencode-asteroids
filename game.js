@@ -18,6 +18,7 @@ const keys = {};
 const justPressed = {};
 
 window.addEventListener('keydown', e => {
+  ensureAudio();   // el AudioContext necesita el primer gesto del usuario
   justPressed[e.code] = !keys[e.code];
   keys[e.code] = true;
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code))
@@ -36,6 +37,144 @@ const wrap  = (v, max) => ((v % max) + max) % max;
 const dist  = (a, b)   => Math.hypot(a.x - b.x, a.y - b.y);
 const rand  = (min, max) => min + Math.random() * (max - min);
 const randInt = (min, max) => Math.floor(rand(min, max + 1));
+
+// ── Sonido (Web Audio) ────────────────────────────────────────────────────────
+// Todos los efectos se sintetizan por código: nada de archivos ni dependencias.
+// El AudioContext se crea con el primer gesto del usuario (política de autoplay).
+let audioCtx    = null;
+let masterGain  = null;
+let noiseBuffer = null;   // ruido blanco compartido por las explosiones
+let muted       = false;
+
+const MASTER_VOLUME = 0.25;
+
+function ensureAudio() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;   // navegador sin Web Audio: el juego sigue en silencio
+    audioCtx   = new AC();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = muted ? 0 : MASTER_VOLUME;
+    masterGain.connect(audioCtx.destination);
+
+    // Un segundo de ruido blanco, reutilizado por todos los sonidos de explosión
+    const len = audioCtx.sampleRate;
+    noiseBuffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function loadMuted() {
+  try { muted = localStorage.getItem('asteroids-muted') === '1'; } catch {}
+}
+
+function saveMuted() {
+  try { localStorage.setItem('asteroids-muted', muted ? '1' : '0'); } catch {}
+}
+
+function toggleMute() {
+  muted = !muted;
+  saveMuted();
+  if (masterGain) masterGain.gain.value = muted ? 0 : MASTER_VOLUME;
+}
+
+// Nota de oscilador con envolvente y, opcionalmente, barrido de frecuencia
+function tone({ type = 'square', from = 440, to = null, dur = 0.2,
+                vol = 0.4, delay = 0, attack = 0.005 }) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime + delay;
+  const o  = audioCtx.createOscillator();
+  const g  = audioCtx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(from, t);
+  if (to !== null) o.frequency.exponentialRampToValueAtTime(Math.max(to, 1), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g);
+  g.connect(masterGain);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+// Ráfaga de ruido con un pasa-bajos que se cierra (explosiones)
+function noiseBurst({ dur = 0.3, from = 1000, to = 200, vol = 0.5, delay = 0 }) {
+  if (!audioCtx) return;
+  const t   = audioCtx.currentTime + delay;
+  const src = audioCtx.createBufferSource();
+  src.buffer = noiseBuffer;
+  src.loop   = true;
+  const f = audioCtx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.setValueAtTime(from, t);
+  f.frequency.exponentialRampToValueAtTime(Math.max(to, 40), t + dur);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  src.connect(f);
+  f.connect(g);
+  g.connect(masterGain);
+  src.start(t);
+  src.stop(t + dur + 0.02);
+}
+
+// — Los nueve efectos, cada uno con su timbre propio —
+
+// Disparo del jugador: zap agudo y corto
+function sfxShoot() {
+  tone({ type: 'square', from: 880, to: 180, dur: 0.12, vol: 0.35 });
+}
+
+// Disparo de la nave enemiga: variante grave, aviso para esquivar
+function sfxEnemyShoot() {
+  tone({ type: 'sawtooth', from: 300, to: 60, dur: 0.18, vol: 0.45 });
+}
+
+// Asteroide roto: crujido de ruido; cuanto más grande, más grave y largo
+function sfxAsteroid(size) {
+  const BASE = [0, 1400, 900, 500][size];
+  const DUR  = [0, 0.22, 0.32, 0.45][size];
+  noiseBurst({ dur: DUR, from: BASE * 2, to: BASE * 0.3, vol: 0.5 });
+}
+
+// Aparición de la nave enemiga: sirena de dos tonos descendentes
+function sfxEnemyAppear() {
+  tone({ type: 'sawtooth', from: 700, to: 500, dur: 0.2,  vol: 0.3 });
+  tone({ type: 'sawtooth', from: 500, to: 340, dur: 0.25, vol: 0.3, delay: 0.2 });
+}
+
+// Destrucción de la nave enemiga: boom brillante con destello ascendente
+function sfxEnemyDie() {
+  noiseBurst({ dur: 0.45, from: 2200, to: 250, vol: 0.55 });
+  tone({ type: 'triangle', from: 150, to: 1100, dur: 0.3, vol: 0.3 });
+}
+
+// Aparición de un power-up: campana suave
+function sfxPowerupAppear() {
+  tone({ type: 'sine', from: 1200, dur: 0.3,  vol: 0.25, attack: 0.02 });
+  tone({ type: 'sine', from: 1800, dur: 0.25, vol: 0.15, attack: 0.02 });
+}
+
+// Power-up recogido: arpegio ascendente de tres notas (do–mi–sol)
+function sfxPowerupPickup() {
+  [523, 659, 784].forEach((freq, i) =>
+    tone({ type: 'triangle', from: freq, dur: 0.12, vol: 0.4, delay: i * 0.09 }));
+}
+
+// Nivel superado: fanfarria de cuatro notas, la última se sostiene
+function sfxLevelUp() {
+  const NOTES = [392, 523, 659, 784];
+  NOTES.forEach((freq, i) =>
+    tone({ type: 'square', from: freq, dur: i === NOTES.length - 1 ? 0.5 : 0.13, vol: 0.3, delay: i * 0.13 }));
+}
+
+// Nave del jugador destruida: la explosión más grande
+function sfxPlayerDie() {
+  noiseBurst({ dur: 0.9, from: 800, to: 60, vol: 0.6 });
+  tone({ type: 'sawtooth', from: 220, to: 40, dur: 0.8, vol: 0.4 });
+}
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 class Bullet {
@@ -272,6 +411,7 @@ class Ship {
   tryShoot() {
     if (this.shootCooldown > 0 || this.dead) return [];
     this.shootCooldown = 0.2;
+    sfxShoot();
     const NOSE = SKINS[skinIndex].nose;
     const ox = this.x + Math.cos(this.angle) * NOSE;
     const oy = this.y + Math.sin(this.angle) * NOSE;
@@ -465,6 +605,7 @@ class EnemyShip {
         this.fireTimer = rand(ENEMY_FIRE_MIN, ENEMY_FIRE_MAX);
         const aim = Math.atan2(ship.y - this.y, ship.x - this.x) + rand(-0.08, 0.08);
         bullets.push(new Bullet(this.x, this.y, aim, true));
+        sfxEnemyShoot();
       }
     }
   }
@@ -558,6 +699,7 @@ function spawnEnemy() {
     y = rand(0, H);
   } while (Math.hypot(x - ship.x, y - ship.y) < SAFE_DIST);
   enemies.push(new EnemyShip(x, y));
+  sfxEnemyAppear();
 }
 
 function initGame() {
@@ -582,6 +724,7 @@ function enterSelect() {
 }
 
 function nextLevel() {
+  sfxLevelUp();
   level++;
   bullets   = [];
   particles = [];
@@ -595,6 +738,7 @@ function explode(x, y, count = 8) {
 
 // Explosión vistosa de la nave enemiga: mezcla de colores y más partículas
 function bigExplosion(x, y) {
+  sfxEnemyDie();
   const COLORS = ['255,255,255', '0,200,255', '255,130,0'];
   for (let i = 0; i < 36; i++) {
     particles.push(new Particle(x, y, {
@@ -606,6 +750,7 @@ function bigExplosion(x, y) {
 }
 
 function killShip() {
+  sfxPlayerDie();
   explode(ship.x, ship.y, 14);
   ship.dead = true;
   ship.boost    = 0;   // el boost se pierde al morir
@@ -625,6 +770,9 @@ function killShip() {
 
 // ── Update ────────────────────────────────────────────────────────────────────
 function update(dt) {
+  // Silencio global (M): activo en cualquier estado
+  if (pressed('KeyM')) toggleMute();
+
   // Menú de selección de nave
   if (state === 'select') {
     if (pressed('ArrowLeft'))  { skinIndex = wrap(skinIndex - 1, SKINS.length); saveSkin(); }
@@ -688,9 +836,12 @@ function update(dt) {
         if (b.enemy) { explode(b.x, b.y, 3); continue; }
         a.dead = true;
         score += POINTS[a.size];
+        sfxAsteroid(a.size);
         explode(a.x, a.y, a.size * 5);
-        if (Math.random() < 0.15)
+        if (Math.random() < 0.15) {
           powerups.push(new PowerUp(a.x, a.y, ['boost', 'shield', 'triple'][randInt(0, 2)]));
+          sfxPowerupAppear();
+        }
         newAsteroids.push(...a.split());
       }
     }
@@ -742,6 +893,7 @@ function update(dt) {
           ship.shield = Math.max(0, ship.shield - SHIELD_HIT_COST);
           if (ship.shield === 0) ship.shieldMax = 0;
           a.dead = true;
+          sfxAsteroid(a.size);
           explode(a.x, a.y, a.size * 5);
           splits.push(...a.split());
         } else {
@@ -777,6 +929,7 @@ function update(dt) {
     for (const pu of powerups) {
       if (dist(ship, pu) < ship.radius + pu.radius) {
         pu.dead = true;
+        sfxPowerupPickup();
         if (pu.type === 'shield') {
           ship.shield += SHIELD_DURATION;
           ship.shieldMax = ship.shield;   // la barra nace llena
@@ -881,6 +1034,15 @@ function drawOverlay(title, sub) {
   ctx.fillText(sub, W / 2, H / 2 + 22);
 }
 
+// Aviso de silencio, visible en cualquier estado
+function drawMuteIndicator() {
+  if (!muted) return;
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font      = '13px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText('♪ OFF  (M)', W - 14, H - 12);
+}
+
 function drawSelect() {
   const GAP = W / (SKINS.length + 1);   // espaciado uniforme entre vistas
   const CY  = H / 2 - 20;
@@ -944,6 +1106,8 @@ function draw() {
   particles.forEach(p => p.draw());
   asteroids.forEach(a => a.draw());
 
+  drawMuteIndicator();
+
   if (state === 'select') {
     drawSelect();
     return;
@@ -972,5 +1136,6 @@ function loop(ts) {
 }
 
 loadSkin();
+loadMuted();
 enterSelect();
 requestAnimationFrame(loop);
