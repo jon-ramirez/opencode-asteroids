@@ -125,6 +125,74 @@ class Asteroid {
   }
 }
 
+// ── Skins de la nave ──────────────────────────────────────────────────────────
+// Cada skin define su silueta (pts: polígono cerrado con la nariz hacia +x),
+// detalles abiertos (lines), color del casco y distancia de la nariz (nose),
+// de donde salen las balas. El radio de colisión (12) es común a todas.
+const SKINS = [
+  {
+    name:  'CLÁSICA',
+    desc:  'La silueta de toda la vida.',
+    color: '#fff',
+    nose:  20,
+    pts: [[20, 0], [-12, -9], [-7, 0], [-12, 9]],
+  },
+  {
+    name:  'CAZA',
+    desc:  'Alas en flecha para un caza puro.',
+    color: '#00c8ff',
+    nose:  22,
+    pts: [
+      [ 22,   0], [  6,  -3], [ -2, -13], [ -8, -13],
+      [ -4,  -3], [-10,  -3], [-13,   0], [-10,   3],
+      [ -4,   3], [ -8,  13], [ -2,  13], [  6,   3],
+    ],
+    lines: [[[9, 0], [6, -3], [2, -3], [4, 0], [2, 3], [6, 3], [9, 0]]],   // cabina
+  },
+  {
+    name:  'DARDO',
+    desc:  'Fina y veloz, hecha para esquivar.',
+    color: '#ff4d4d',
+    nose:  26,
+    pts: [[26, 0], [-9, -5], [-16, -6], [-6, 0], [-16, 6], [-9, 5]],
+  },
+  {
+    name:  'EXPLORADOR',
+    desc:  'Casco amplio con cúpula panorámica.',
+    color: '#4dff88',
+    nose:  16,
+    pts: [[16, 0], [9, -9], [-8, -11], [-15, -5], [-15, 5], [-8, 11], [9, 9]],
+    lines: [[[3, -7], [1, -12], [-3, -12], [-5, -7]]],   // cúpula
+  },
+];
+
+let skinIndex = 0;
+
+function loadSkin() {
+  try {
+    const v = parseInt(localStorage.getItem('asteroids-skin'), 10);
+    if (Number.isInteger(v)) skinIndex = Math.min(Math.max(v, 0), SKINS.length - 1);
+  } catch { /* localStorage puede no estar disponible */ }
+}
+
+function saveSkin() {
+  try { localStorage.setItem('asteroids-skin', String(skinIndex)); } catch {}
+}
+
+// Traza la silueta de una skin en el contexto actual; quien llama posiciona y hace stroke()
+function traceSkin(skin, scale = 1) {
+  ctx.beginPath();
+  ctx.moveTo(skin.pts[0][0] * scale, skin.pts[0][1] * scale);
+  for (let i = 1; i < skin.pts.length; i++)
+    ctx.lineTo(skin.pts[i][0] * scale, skin.pts[i][1] * scale);
+  ctx.closePath();
+  for (const line of skin.lines || []) {
+    ctx.moveTo(line[0][0] * scale, line[0][1] * scale);
+    for (let i = 1; i < line.length; i++)
+      ctx.lineTo(line[i][0] * scale, line[i][1] * scale);
+  }
+}
+
 // ── Ship ──────────────────────────────────────────────────────────────────────
 class Ship {
   constructor() { this.reset(); }
@@ -181,7 +249,7 @@ class Ship {
   tryShoot() {
     if (this.shootCooldown > 0 || this.dead) return [];
     this.shootCooldown = 0.2;
-    const NOSE = 21;
+    const NOSE = SKINS[skinIndex].nose;
     const ox = this.x + Math.cos(this.angle) * NOSE;
     const oy = this.y + Math.sin(this.angle) * NOSE;
     return [new Bullet(ox, oy, this.angle)];
@@ -192,20 +260,17 @@ class Ship {
     // Parpadeo durante invencibilidad de reaparición
     if (this.invincible > 0 && Math.floor(this.invincible * 8) % 2 === 0) return;
 
+    const skin = SKINS[skinIndex];
+
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle);
-    ctx.strokeStyle = '#fff';
+    ctx.strokeStyle = skin.color;
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
-    // Silueta clásica: triángulo con muesca trasera
-    ctx.beginPath();
-    ctx.moveTo( 20,  0);   // nariz
-    ctx.lineTo(-12, -9);   // ala izquierda
-    ctx.lineTo( -7,  0);   // muesca trasera
-    ctx.lineTo(-12,  9);   // ala derecha
-    ctx.closePath();
+    // Silueta de la skin activa
+    traceSkin(skin);
     ctx.stroke();
 
     // Llama del propulsor (cian y más larga con boost)
@@ -435,6 +500,12 @@ function initGame() {
   spawnAsteroids(4);
 }
 
+// Menú de selección de nave: el campo recién inicializado sirve de fondo animado
+function enterSelect() {
+  initGame();
+  state = 'select';
+}
+
 function nextLevel() {
   level++;
   bullets   = [];
@@ -475,8 +546,20 @@ function killShip() {
 
 // ── Update ────────────────────────────────────────────────────────────────────
 function update(dt) {
+  // Menú de selección de nave
+  if (state === 'select') {
+    if (pressed('ArrowLeft'))  { skinIndex = wrap(skinIndex - 1, SKINS.length); saveSkin(); }
+    if (pressed('ArrowRight')) { skinIndex = wrap(skinIndex + 1, SKINS.length); saveSkin(); }
+    if (pressed('Space') || pressed('Enter')) { state = 'playing'; return; }
+
+    particles.forEach(p => p.update(dt));
+    particles = particles.filter(p => !p.dead);
+    asteroids.forEach(a => a.update(dt));
+    return;
+  }
+
   if (state === 'gameover') {
-    if (pressed('Space')) initGame();
+    if (pressed('Space')) enterSelect();
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
     return;
@@ -590,18 +673,14 @@ function update(dt) {
 
 // ── Draw ──────────────────────────────────────────────────────────────────────
 function drawLifeIcon(x, y) {
+  const skin = SKINS[skinIndex];
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(-Math.PI / 2);
-  ctx.strokeStyle = '#fff';
+  ctx.strokeStyle = skin.color;
   ctx.lineWidth   = 1.2;
   ctx.lineJoin    = 'round';
-  ctx.beginPath();
-  ctx.moveTo( 9,  0);
-  ctx.lineTo(-6, -5);
-  ctx.lineTo(-3,  0);
-  ctx.lineTo(-6,  5);
-  ctx.closePath();
+  traceSkin(skin, 0.45);
   ctx.stroke();
   ctx.restore();
 }
@@ -645,12 +724,74 @@ function drawOverlay(title, sub) {
   ctx.fillText(sub, W / 2, H / 2 + 22);
 }
 
+function drawSelect() {
+  const GAP = W / (SKINS.length + 1);   // espaciado uniforme entre vistas
+  const CY  = H / 2 - 20;
+
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#fff';
+  ctx.font      = 'bold 32px monospace';
+  ctx.fillText('SELECCIÓN DE NAVE', W / 2, 110);
+
+  SKINS.forEach((skin, i) => {
+    const x   = GAP * (i + 1);
+    const sel = i === skinIndex;
+
+    // Marco alrededor de la selección
+    if (sel) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth   = 1.5;
+      ctx.strokeRect(x - 48, CY - 52, 96, 104);
+    }
+
+    ctx.save();
+    ctx.translate(x, CY);
+    ctx.rotate(-Math.PI / 2);
+    ctx.globalAlpha = sel ? 1 : 0.35;
+    ctx.strokeStyle = skin.color;
+    ctx.lineWidth   = 1.5;
+    ctx.lineJoin    = 'round';
+    traceSkin(skin, sel ? 1.6 : 1.2);
+    ctx.stroke();
+
+    // Llama animada en la nave seleccionada
+    if (sel && Math.random() > 0.3) {
+      ctx.beginPath();
+      ctx.moveTo(-12, -5);
+      ctx.lineTo(-12 - rand(8, 22), 0);
+      ctx.lineTo(-12, 5);
+      ctx.strokeStyle = 'rgba(255, 130, 0, 0.85)';
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    ctx.fillStyle = skin.color;
+    ctx.font      = 'bold 15px monospace';
+    ctx.fillText(skin.name, x, CY + 78);
+  });
+
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.font      = '15px monospace';
+  ctx.fillText(SKINS[skinIndex].desc, W / 2, CY + 118);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font      = '15px monospace';
+  ctx.fillText('← →  CAMBIAR NAVE        ESPACIO / ENTER  JUGAR', W / 2, H - 44);
+}
+
 function draw() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
   particles.forEach(p => p.draw());
   asteroids.forEach(a => a.draw());
+
+  if (state === 'select') {
+    drawSelect();
+    return;
+  }
+
   powerups.forEach(pu => pu.draw());
   enemies.forEach(e => e.draw());
   bullets.forEach(b => b.draw());
@@ -659,7 +800,7 @@ function draw() {
   drawHUD();
 
   if (state === 'gameover')
-    drawOverlay('GAME OVER', `PUNTAJE: ${score}   —   ESPACIO PARA REINICIAR`);
+    drawOverlay('GAME OVER', `PUNTAJE: ${score}   —   ESPACIO: CAMBIAR DE NAVE`);
 }
 
 // ── Loop principal ────────────────────────────────────────────────────────────
@@ -673,5 +814,6 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
-initGame();
+loadSkin();
+enterSelect();
 requestAnimationFrame(loop);
