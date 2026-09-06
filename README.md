@@ -30,6 +30,8 @@ Luego visita `http://localhost:3000`.
 | `↑`       | Propulsar  |
 | `Espacio` | Disparar   |
 
+En el menú de selección de nave (al iniciar y tras un game over): `←` `→` cambian de nave y `Espacio` o `Enter` confirman la elección.
+
 ## Puntuación
 
 | Asteroide | Puntos |
@@ -44,3 +46,4 @@ Luego visita `http://localhost:3000`.
 - Asteroides se parten en fragmentos más pequeños al ser destruidos
 - Partículas de explosión al destruir asteroides
 - Power-up de velocidad: los asteroides destruidos lo sueltan (15% de probabilidad) y duplica el empuje de la nave durante 5 s acumulables, con tiempo restante y barra en el HUD
+- Sistema de skins: menú de selección de nave (al iniciar y tras un game over) con 4 siluetas y colores; la elección se recuerda entre sesiones (localStorage) y los iconos de vidas reflejan la nave activa

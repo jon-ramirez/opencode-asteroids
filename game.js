@@ -5,8 +5,13 @@ const ctx = canvas.getContext('2d');
 const W = 800;
 const H = 600;
 
-const BOOST_DURATION = 5;   // segundos de boost que otorga cada pickup
-const BOOST_FACTOR   = 2;   // multiplicador de empuje durante el boost
+const BOOST_DURATION  = 5;   // segundos de boost que otorga cada pickup
+const BOOST_FACTOR    = 2;   // multiplicador de empuje durante el boost
+const TRIPLE_DURATION = 5;   // segundos de disparo triple que otorga cada pickup
+
+const SHIELD_DURATION = 5;    // segundos de escudo que otorga cada pickup
+const SHIELD_HIT_COST = 1.5;  // tiempo de escudo consumido por impacto físico
+const SHIELD_RADIUS   = 24;   // radio de protección alrededor de la nave
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {};
@@ -34,14 +39,15 @@ const randInt = (min, max) => Math.floor(rand(min, max + 1));
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 class Bullet {
-  constructor(x, y, angle) {
+  constructor(x, y, angle, enemy = false) {
     this.x = x;
     this.y = y;
-    const SPEED = 520;
+    this.enemy = enemy;
+    const SPEED = enemy ? ENEMY_BULLET_SPEED : 520;
     this.vx = Math.cos(angle) * SPEED;
     this.vy = Math.sin(angle) * SPEED;
-    this.ttl  = 1.1;
-    this.radius = 2;
+    this.ttl  = enemy ? 2 : 1.1;
+    this.radius = enemy ? 2.5 : 2;
     this.dead = false;
   }
 
@@ -53,7 +59,8 @@ class Bullet {
   }
 
   draw() {
-    ctx.fillStyle = '#fff';
+    // Las balas enemigas se distinguen por su color rojizo
+    ctx.fillStyle = this.enemy ? 'rgb(255,80,80)' : '#fff';
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
     ctx.fill();
@@ -68,6 +75,10 @@ const POINTS = [0, 100, 50, 20];  // puntos por tamaño
 const ENEMY_SPEED  = SPEEDS[1] * 2;   // nave enemiga: el doble de rápida que un asteroide pequeño
 const ENEMY_POINTS = POINTS[1] * 3;   // nave enemiga: el triple de puntos que un asteroide pequeño
 const ENEMY_TTL    = 5;               // segundos que dura en pantalla
+
+const ENEMY_FIRE_MIN     = 0.9;   // cadencia de disparo: intervalo mínimo (s)
+const ENEMY_FIRE_MAX     = 1.4;   // cadencia de disparo: intervalo máximo (s)
+const ENEMY_BULLET_SPEED = 300;   // velocidad de las balas enemigas (px/s)
 
 class Asteroid {
   constructor(x, y, size = 3) {
@@ -125,6 +136,74 @@ class Asteroid {
   }
 }
 
+// ── Skins de la nave ──────────────────────────────────────────────────────────
+// Cada skin define su silueta (pts: polígono cerrado con la nariz hacia +x),
+// detalles abiertos (lines), color del casco y distancia de la nariz (nose),
+// de donde salen las balas. El radio de colisión (12) es común a todas.
+const SKINS = [
+  {
+    name:  'CLÁSICA',
+    desc:  'La silueta de toda la vida.',
+    color: '#fff',
+    nose:  20,
+    pts: [[20, 0], [-12, -9], [-7, 0], [-12, 9]],
+  },
+  {
+    name:  'CAZA',
+    desc:  'Alas en flecha para un caza puro.',
+    color: '#00c8ff',
+    nose:  22,
+    pts: [
+      [ 22,   0], [  6,  -3], [ -2, -13], [ -8, -13],
+      [ -4,  -3], [-10,  -3], [-13,   0], [-10,   3],
+      [ -4,   3], [ -8,  13], [ -2,  13], [  6,   3],
+    ],
+    lines: [[[9, 0], [6, -3], [2, -3], [4, 0], [2, 3], [6, 3], [9, 0]]],   // cabina
+  },
+  {
+    name:  'DARDO',
+    desc:  'Fina y veloz, hecha para esquivar.',
+    color: '#ff4d4d',
+    nose:  26,
+    pts: [[26, 0], [-9, -5], [-16, -6], [-6, 0], [-16, 6], [-9, 5]],
+  },
+  {
+    name:  'EXPLORADOR',
+    desc:  'Casco amplio con cúpula panorámica.',
+    color: '#4dff88',
+    nose:  16,
+    pts: [[16, 0], [9, -9], [-8, -11], [-15, -5], [-15, 5], [-8, 11], [9, 9]],
+    lines: [[[3, -7], [1, -12], [-3, -12], [-5, -7]]],   // cúpula
+  },
+];
+
+let skinIndex = 0;
+
+function loadSkin() {
+  try {
+    const v = parseInt(localStorage.getItem('asteroids-skin'), 10);
+    if (Number.isInteger(v)) skinIndex = Math.min(Math.max(v, 0), SKINS.length - 1);
+  } catch { /* localStorage puede no estar disponible */ }
+}
+
+function saveSkin() {
+  try { localStorage.setItem('asteroids-skin', String(skinIndex)); } catch {}
+}
+
+// Traza la silueta de una skin en el contexto actual; quien llama posiciona y hace stroke()
+function traceSkin(skin, scale = 1) {
+  ctx.beginPath();
+  ctx.moveTo(skin.pts[0][0] * scale, skin.pts[0][1] * scale);
+  for (let i = 1; i < skin.pts.length; i++)
+    ctx.lineTo(skin.pts[i][0] * scale, skin.pts[i][1] * scale);
+  ctx.closePath();
+  for (const line of skin.lines || []) {
+    ctx.moveTo(line[0][0] * scale, line[0][1] * scale);
+    for (let i = 1; i < line.length; i++)
+      ctx.lineTo(line[i][0] * scale, line[i][1] * scale);
+  }
+}
+
 // ── Ship ──────────────────────────────────────────────────────────────────────
 class Ship {
   constructor() { this.reset(); }
@@ -142,6 +221,10 @@ class Ship {
     this.dead          = false;
     this.boost         = 0;   // segundos de boost restantes
     this.boostMax      = 0;   // total acumulado (referencia de la barra del HUD)
+    this.shield        = 0;   // segundos de escudo restantes
+    this.shieldMax     = 0;   // total acumulado (referencia de la barra del HUD)
+    this.triple        = 0;   // segundos de disparo triple restantes
+    this.tripleMax     = 0;   // total acumulado (referencia de la barra del HUD)
   }
 
   update(dt) {
@@ -151,6 +234,14 @@ class Ship {
     if (this.boost > 0) {
       this.boost -= dt;
       if (this.boost <= 0) { this.boost = 0; this.boostMax = 0; }
+    }
+    if (this.shield > 0) {
+      this.shield -= dt;
+      if (this.shield <= 0) { this.shield = 0; this.shieldMax = 0; }
+    }
+    if (this.triple > 0) {
+      this.triple -= dt;
+      if (this.triple <= 0) { this.triple = 0; this.tripleMax = 0; }
     }
 
     const ROT   = 3.5;   // rad/s
@@ -181,9 +272,16 @@ class Ship {
   tryShoot() {
     if (this.shootCooldown > 0 || this.dead) return [];
     this.shootCooldown = 0.2;
-    const NOSE = 21;
+    const NOSE = SKINS[skinIndex].nose;
     const ox = this.x + Math.cos(this.angle) * NOSE;
     const oy = this.y + Math.sin(this.angle) * NOSE;
+
+    // Con disparo triple: 3 balas paralelas, desplazadas perpendicularmente
+    if (this.triple > 0) {
+      const px = -Math.sin(this.angle);
+      const py =  Math.cos(this.angle);
+      return [-9, 0, 9].map(off => new Bullet(ox + px * off, oy + py * off, this.angle));
+    }
     return [new Bullet(ox, oy, this.angle)];
   }
 
@@ -192,20 +290,17 @@ class Ship {
     // Parpadeo durante invencibilidad de reaparición
     if (this.invincible > 0 && Math.floor(this.invincible * 8) % 2 === 0) return;
 
+    const skin = SKINS[skinIndex];
+
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle);
-    ctx.strokeStyle = '#fff';
+    ctx.strokeStyle = skin.color;
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
-    // Silueta clásica: triángulo con muesca trasera
-    ctx.beginPath();
-    ctx.moveTo( 20,  0);   // nariz
-    ctx.lineTo(-12, -9);   // ala izquierda
-    ctx.lineTo( -7,  0);   // muesca trasera
-    ctx.lineTo(-12,  9);   // ala derecha
-    ctx.closePath();
+    // Silueta de la skin activa
+    traceSkin(skin);
     ctx.stroke();
 
     // Llama del propulsor (cian y más larga con boost)
@@ -220,6 +315,16 @@ class Ship {
     }
 
     ctx.restore();
+
+    // Escudo activo: círculo cian pulsante alrededor de la nave
+    if (this.shield > 0) {
+      const pulse = 0.55 + 0.3 * Math.sin(Date.now() / 160);
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, SHIELD_RADIUS, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(0,200,255,${pulse.toFixed(2)})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
   }
 }
 
@@ -256,9 +361,10 @@ class Particle {
   }
 }
 
-// ── Power-up de velocidad ─────────────────────────────────────────────────────
+// ── Power-ups: boost, escudo y disparo triple ───────────────────────────────────
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type = 'boost') {
+    this.type = type;
     this.x = x;
     this.y = y;
     this.radius = 10;
@@ -292,15 +398,38 @@ class PowerUp {
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
-    // Doble chevron «»
-    ctx.beginPath();
-    ctx.moveTo(-10, -7);
-    ctx.lineTo(-3, 0);
-    ctx.lineTo(-10, 7);
-    ctx.moveTo(1, -7);
-    ctx.lineTo(8, 0);
-    ctx.lineTo(1, 7);
-    ctx.stroke();
+    if (this.type === 'shield') {
+      // Hexágono del escudo, en cian como el propio escudo
+      ctx.strokeStyle = 'rgb(0, 200, 255)';
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
+        const px = Math.cos(a) * 9;
+        const py = Math.sin(a) * 9;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    } else if (this.type === 'triple') {
+      // Tres trazos verticales paralelos «|||»
+      ctx.beginPath();
+      for (const dx of [-8, 0, 8]) {
+        ctx.moveTo(dx, -6);
+        ctx.lineTo(dx, 6);
+      }
+      ctx.stroke();
+    } else {
+      // Doble chevron «»
+      ctx.beginPath();
+      ctx.moveTo(-10, -7);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-10, 7);
+      ctx.moveTo(1, -7);
+      ctx.lineTo(8, 0);
+      ctx.lineTo(1, 7);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 }
@@ -315,6 +444,7 @@ class EnemyShip {
     this.ttl    = ENEMY_TTL;
     this.angle     = rand(0, Math.PI * 2);
     this.turnTimer = rand(0.3, 0.7);   // zigzag: nueva dirección al agotarse
+    this.fireTimer = rand(ENEMY_FIRE_MIN, ENEMY_FIRE_MAX);   // cuándo disparar
   }
 
   update(dt) {
@@ -327,6 +457,16 @@ class EnemyShip {
     this.y = wrap(this.y + Math.sin(this.angle) * ENEMY_SPEED * dt, H);
     this.ttl -= dt;
     if (this.ttl <= 0) this.dead = true;   // se desvanece sin explotar
+
+    // Dispara balas dirigidas a la nave del jugador
+    if (!ship.dead) {
+      this.fireTimer -= dt;
+      if (this.fireTimer <= 0) {
+        this.fireTimer = rand(ENEMY_FIRE_MIN, ENEMY_FIRE_MAX);
+        const aim = Math.atan2(ship.y - this.y, ship.x - this.x) + rand(-0.08, 0.08);
+        bullets.push(new Bullet(this.x, this.y, aim, true));
+      }
+    }
   }
 
   draw() {
@@ -435,6 +575,12 @@ function initGame() {
   spawnAsteroids(4);
 }
 
+// Menú de selección de nave: el campo recién inicializado sirve de fondo animado
+function enterSelect() {
+  initGame();
+  state = 'select';
+}
+
 function nextLevel() {
   level++;
   bullets   = [];
@@ -464,6 +610,10 @@ function killShip() {
   ship.dead = true;
   ship.boost    = 0;   // el boost se pierde al morir
   ship.boostMax = 0;
+  ship.shield    = 0;  // el escudo se pierde al morir
+  ship.shieldMax = 0;
+  ship.triple    = 0;  // el disparo triple también se pierde al morir
+  ship.tripleMax = 0;
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -475,8 +625,20 @@ function killShip() {
 
 // ── Update ────────────────────────────────────────────────────────────────────
 function update(dt) {
+  // Menú de selección de nave
+  if (state === 'select') {
+    if (pressed('ArrowLeft'))  { skinIndex = wrap(skinIndex - 1, SKINS.length); saveSkin(); }
+    if (pressed('ArrowRight')) { skinIndex = wrap(skinIndex + 1, SKINS.length); saveSkin(); }
+    if (pressed('Space') || pressed('Enter')) { state = 'playing'; return; }
+
+    particles.forEach(p => p.update(dt));
+    particles = particles.filter(p => !p.dead);
+    asteroids.forEach(a => a.update(dt));
+    return;
+  }
+
   if (state === 'gameover') {
-    if (pressed('Space')) initGame();
+    if (pressed('Space')) enterSelect();
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
     return;
@@ -517,16 +679,18 @@ function update(dt) {
   powerups   = powerups.filter(pu => !pu.dead);
   enemies    = enemies.filter(e => !e.dead);
 
-  // Bala vs asteroide
+  // Bala vs asteroide (las balas enemigas solo mueren, no destruyen)
   const newAsteroids = [];
   for (const b of bullets) {
     for (const a of asteroids) {
       if (!a.dead && !b.dead && dist(b, a) < a.radius) {
         b.dead = true;
+        if (b.enemy) { explode(b.x, b.y, 3); continue; }
         a.dead = true;
         score += POINTS[a.size];
         explode(a.x, a.y, a.size * 5);
-        if (Math.random() < 0.15) powerups.push(new PowerUp(a.x, a.y));
+        if (Math.random() < 0.15)
+          powerups.push(new PowerUp(a.x, a.y, ['boost', 'shield', 'triple'][randInt(0, 2)]));
         newAsteroids.push(...a.split());
       }
     }
@@ -534,8 +698,9 @@ function update(dt) {
   asteroids = asteroids.filter(a => !a.dead).concat(newAsteroids);
   bullets   = bullets.filter(b => !b.dead);
 
-  // Bala vs nave enemiga
+  // Bala del jugador vs nave enemiga
   for (const b of bullets) {
+    if (b.enemy) continue;
     for (const e of enemies) {
       if (!e.dead && !b.dead && dist(b, e) < e.radius) {
         b.dead = true;
@@ -548,14 +713,44 @@ function update(dt) {
   bullets = bullets.filter(b => !b.dead);
   enemies = enemies.filter(e => !e.dead);
 
-  // Nave vs asteroide
-  if (ship.invincible <= 0) {
-    for (const a of asteroids) {
-      if (dist(ship, a) < ship.radius + a.radius * 0.82) {
+  // Bala enemiga vs nave
+  if (!ship.dead) {
+    for (const b of bullets) {
+      if (!b.enemy || b.dead) continue;
+      if (ship.shield > 0) {
+        if (dist(b, ship) < SHIELD_RADIUS + b.radius) {
+          b.dead = true;
+          explode(b.x, b.y, 3);   // chispas del impacto absorbido
+        }
+      } else if (ship.invincible <= 0 && dist(b, ship) < ship.radius + b.radius) {
+        b.dead = true;
         killShip();
         break;
       }
     }
+    bullets = bullets.filter(b => !b.dead);
+  }
+
+  // Nave vs asteroide
+  if (!ship.dead && ship.invincible <= 0) {
+    const splits = [];
+    for (const a of asteroids) {
+      if (a.dead) continue;
+      if (dist(ship, a) < ship.radius + a.radius * 0.82) {
+        if (ship.shield > 0) {
+          // El escudo destruye el asteroide y absorbe el impacto
+          ship.shield = Math.max(0, ship.shield - SHIELD_HIT_COST);
+          if (ship.shield === 0) ship.shieldMax = 0;
+          a.dead = true;
+          explode(a.x, a.y, a.size * 5);
+          splits.push(...a.split());
+        } else {
+          killShip();
+          break;
+        }
+      }
+    }
+    asteroids = asteroids.filter(a => !a.dead).concat(splits);
   }
 
   // Nave vs nave enemiga
@@ -564,8 +759,14 @@ function update(dt) {
       if (dist(ship, e) < ship.radius + e.radius * 0.82) {
         e.dead = true;
         bigExplosion(e.x, e.y);
-        killShip();
-        break;
+        if (ship.shield > 0) {
+          // El escudo absorbe la embestida
+          ship.shield = Math.max(0, ship.shield - SHIELD_HIT_COST);
+          if (ship.shield === 0) ship.shieldMax = 0;
+        } else {
+          killShip();
+          break;
+        }
       }
     }
     enemies = enemies.filter(e => !e.dead);
@@ -576,8 +777,16 @@ function update(dt) {
     for (const pu of powerups) {
       if (dist(ship, pu) < ship.radius + pu.radius) {
         pu.dead = true;
-        ship.boost += BOOST_DURATION;
-        ship.boostMax = ship.boost;   // la barra nace llena
+        if (pu.type === 'shield') {
+          ship.shield += SHIELD_DURATION;
+          ship.shieldMax = ship.shield;   // la barra nace llena
+        } else if (pu.type === 'triple') {
+          ship.triple += TRIPLE_DURATION;
+          ship.tripleMax = ship.triple;   // la barra nace llena
+        } else {
+          ship.boost += BOOST_DURATION;
+          ship.boostMax = ship.boost;     // la barra nace llena
+        }
         explode(pu.x, pu.y, 6);
       }
     }
@@ -590,18 +799,14 @@ function update(dt) {
 
 // ── Draw ──────────────────────────────────────────────────────────────────────
 function drawLifeIcon(x, y) {
+  const skin = SKINS[skinIndex];
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(-Math.PI / 2);
-  ctx.strokeStyle = '#fff';
+  ctx.strokeStyle = skin.color;
   ctx.lineWidth   = 1.2;
   ctx.lineJoin    = 'round';
-  ctx.beginPath();
-  ctx.moveTo( 9,  0);
-  ctx.lineTo(-6, -5);
-  ctx.lineTo(-3,  0);
-  ctx.lineTo(-6,  5);
-  ctx.closePath();
+  traceSkin(skin, 0.45);
   ctx.stroke();
   ctx.restore();
 }
@@ -619,19 +824,50 @@ function drawHUD() {
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
 
-  // Indicador de boost activo: texto + barra de tiempo restante
+  // Indicadores de efectos activos: texto + barra de tiempo restante
+  let barY = 48;
   if (ship.boost > 0) {
     ctx.fillStyle = 'rgb(0, 200, 255)';
     ctx.font = '15px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(`VELOCIDAD ${ship.boost.toFixed(1)}s`, 14, 48);
+    ctx.fillText(`VELOCIDAD ${ship.boost.toFixed(1)}s`, 14, barY);
 
     const BW = 120, BH = 6;
     const frac = ship.boost / ship.boostMax;
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1;
-    ctx.strokeRect(14, 54, BW, BH);
-    ctx.fillRect(15, 55, (BW - 2) * frac, BH - 2);
+    ctx.strokeRect(14, barY + 6, BW, BH);
+    ctx.fillRect(15, barY + 7, (BW - 2) * frac, BH - 2);
+    barY += 22;
+  }
+  if (ship.triple > 0) {
+    ctx.fillStyle = 'rgb(255, 60, 60)';
+    ctx.font = '15px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`TRIPLE ${ship.triple.toFixed(1)}s`, 14, barY);
+
+    const BW = 120, BH = 6;
+    const frac = ship.triple / ship.tripleMax;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(14, barY + 6, BW, BH);
+    ctx.fillRect(15, barY + 7, (BW - 2) * frac, BH - 2);
+    barY += 22;
+  }
+
+  if (ship.shield > 0) {
+    ctx.fillStyle = 'rgb(0, 200, 255)';
+    ctx.font = '15px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`ESCUDO ${ship.shield.toFixed(1)}s`, 14, barY);
+
+    const BW = 120, BH = 6;
+    const frac = ship.shield / ship.shieldMax;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(14, barY + 6, BW, BH);
+    ctx.fillRect(15, barY + 7, (BW - 2) * frac, BH - 2);
+    barY += 22;
   }
 }
 
@@ -645,12 +881,74 @@ function drawOverlay(title, sub) {
   ctx.fillText(sub, W / 2, H / 2 + 22);
 }
 
+function drawSelect() {
+  const GAP = W / (SKINS.length + 1);   // espaciado uniforme entre vistas
+  const CY  = H / 2 - 20;
+
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#fff';
+  ctx.font      = 'bold 32px monospace';
+  ctx.fillText('SELECCIÓN DE NAVE', W / 2, 110);
+
+  SKINS.forEach((skin, i) => {
+    const x   = GAP * (i + 1);
+    const sel = i === skinIndex;
+
+    // Marco alrededor de la selección
+    if (sel) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth   = 1.5;
+      ctx.strokeRect(x - 48, CY - 52, 96, 104);
+    }
+
+    ctx.save();
+    ctx.translate(x, CY);
+    ctx.rotate(-Math.PI / 2);
+    ctx.globalAlpha = sel ? 1 : 0.35;
+    ctx.strokeStyle = skin.color;
+    ctx.lineWidth   = 1.5;
+    ctx.lineJoin    = 'round';
+    traceSkin(skin, sel ? 1.6 : 1.2);
+    ctx.stroke();
+
+    // Llama animada en la nave seleccionada
+    if (sel && Math.random() > 0.3) {
+      ctx.beginPath();
+      ctx.moveTo(-12, -5);
+      ctx.lineTo(-12 - rand(8, 22), 0);
+      ctx.lineTo(-12, 5);
+      ctx.strokeStyle = 'rgba(255, 130, 0, 0.85)';
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    ctx.fillStyle = skin.color;
+    ctx.font      = 'bold 15px monospace';
+    ctx.fillText(skin.name, x, CY + 78);
+  });
+
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.font      = '15px monospace';
+  ctx.fillText(SKINS[skinIndex].desc, W / 2, CY + 118);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font      = '15px monospace';
+  ctx.fillText('← →  CAMBIAR NAVE        ESPACIO / ENTER  JUGAR', W / 2, H - 44);
+}
+
 function draw() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
 
   particles.forEach(p => p.draw());
   asteroids.forEach(a => a.draw());
+
+  if (state === 'select') {
+    drawSelect();
+    return;
+  }
+
   powerups.forEach(pu => pu.draw());
   enemies.forEach(e => e.draw());
   bullets.forEach(b => b.draw());
@@ -659,7 +957,7 @@ function draw() {
   drawHUD();
 
   if (state === 'gameover')
-    drawOverlay('GAME OVER', `PUNTAJE: ${score}   —   ESPACIO PARA REINICIAR`);
+    drawOverlay('GAME OVER', `PUNTAJE: ${score}   —   ESPACIO: CAMBIAR DE NAVE`);
 }
 
 // ── Loop principal ────────────────────────────────────────────────────────────
@@ -673,5 +971,6 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
-initGame();
+loadSkin();
+enterSelect();
 requestAnimationFrame(loop);
