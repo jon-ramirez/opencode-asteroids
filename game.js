@@ -13,6 +13,8 @@ const SHIELD_DURATION = 5;    // segundos de escudo que otorga cada pickup
 const SHIELD_HIT_COST = 1.5;  // tiempo de escudo consumido por impacto físico
 const SHIELD_RADIUS   = 24;   // radio de protección alrededor de la nave
 
+const GIANT_FACTOR    = 2;    // tamaño (y puntos) multiplicados en modo nave gigante
+
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {};
 const justPressed = {};
@@ -278,7 +280,8 @@ class Asteroid {
 // ── Skins de la nave ──────────────────────────────────────────────────────────
 // Cada skin define su silueta (pts: polígono cerrado con la nariz hacia +x),
 // detalles abiertos (lines), color del casco y distancia de la nariz (nose),
-// de donde salen las balas. El radio de colisión (12) es común a todas.
+// de donde salen las balas. El radio de colisión (12, doble en modo gigante)
+// es común a todas.
 const SKINS = [
   {
     name:  'CLÁSICA',
@@ -329,6 +332,19 @@ function saveSkin() {
   try { localStorage.setItem('asteroids-skin', String(skinIndex)); } catch {}
 }
 
+// ── Modo nave gigante ─────────────────────────────────────────────────────────
+// La nave seleccionada se dibuja al doble de tamaño: otorga el doble de
+// puntos, pero al ser más grande es más fácil de destruir.
+let giantMode = false;
+
+function loadGiant() {
+  try { giantMode = localStorage.getItem('asteroids-giant') === '1'; } catch {}
+}
+
+function saveGiant() {
+  try { localStorage.setItem('asteroids-giant', giantMode ? '1' : '0'); } catch {}
+}
+
 // Traza la silueta de una skin en el contexto actual; quien llama posiciona y hace stroke()
 function traceSkin(skin, scale = 1) {
   ctx.beginPath();
@@ -353,7 +369,9 @@ class Ship {
     this.angle  = -Math.PI / 2;
     this.vx     = 0;
     this.vy     = 0;
-    this.radius = 12;
+    this.scale        = giantMode ? GIANT_FACTOR : 1;   // el modo gigante duplica la nave
+    this.radius       = 12 * this.scale;
+    this.shieldRadius = SHIELD_RADIUS * this.scale;
     this.thrusting     = false;
     this.invincible    = 3;
     this.shootCooldown = 0;
@@ -412,7 +430,7 @@ class Ship {
     if (this.shootCooldown > 0 || this.dead) return [];
     this.shootCooldown = 0.2;
     sfxShoot();
-    const NOSE = SKINS[skinIndex].nose;
+    const NOSE = SKINS[skinIndex].nose * this.scale;
     const ox = this.x + Math.cos(this.angle) * NOSE;
     const oy = this.y + Math.sin(this.angle) * NOSE;
 
@@ -420,7 +438,7 @@ class Ship {
     if (this.triple > 0) {
       const px = -Math.sin(this.angle);
       const py =  Math.cos(this.angle);
-      return [-9, 0, 9].map(off => new Bullet(ox + px * off, oy + py * off, this.angle));
+      return [-9, 0, 9].map(off => new Bullet(ox + px * off * this.scale, oy + py * off * this.scale, this.angle));
     }
     return [new Bullet(ox, oy, this.angle)];
   }
@@ -439,17 +457,18 @@ class Ship {
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
-    // Silueta de la skin activa
-    traceSkin(skin);
+    // Silueta de la skin activa (a escala del modo gigante)
+    traceSkin(skin, this.scale);
     ctx.stroke();
 
     // Llama del propulsor (cian y más larga con boost)
     if (this.thrusting && Math.random() > 0.35) {
       const boost = this.boost > 0;
+      const s = this.scale;
       ctx.beginPath();
-      ctx.moveTo(-8, -4);
-      ctx.lineTo(-8 - rand(6, boost ? 22 : 14), 0);
-      ctx.lineTo(-8,  4);
+      ctx.moveTo(-8 * s, -4 * s);
+      ctx.lineTo(-8 * s - rand(6, boost ? 22 : 14) * s, 0);
+      ctx.lineTo(-8 * s,  4 * s);
       ctx.strokeStyle = boost ? 'rgba(0, 200, 255, 0.9)' : 'rgba(255, 130, 0, 0.85)';
       ctx.stroke();
     }
@@ -460,7 +479,7 @@ class Ship {
     if (this.shield > 0) {
       const pulse = 0.55 + 0.3 * Math.sin(Date.now() / 160);
       ctx.beginPath();
-      ctx.arc(this.x, this.y, SHIELD_RADIUS, 0, Math.PI * 2);
+      ctx.arc(this.x, this.y, this.shieldRadius, 0, Math.PI * 2);
       ctx.strokeStyle = `rgba(0,200,255,${pulse.toFixed(2)})`;
       ctx.lineWidth = 1.5;
       ctx.stroke();
@@ -644,7 +663,7 @@ class EnemyShip {
 // ── Estela del boost ──────────────────────────────────────────────────────────
 class TrailParticle {
   constructor(ship) {
-    const TAIL = 14;
+    const TAIL = 14 * ship.scale;
     this.x = ship.x - Math.cos(ship.angle) * TAIL;
     this.y = ship.y - Math.sin(ship.angle) * TAIL;
     this.vx = -ship.vx * 0.15 + rand(-12, 12);
@@ -777,7 +796,9 @@ function update(dt) {
   if (state === 'select') {
     if (pressed('ArrowLeft'))  { skinIndex = wrap(skinIndex - 1, SKINS.length); saveSkin(); }
     if (pressed('ArrowRight')) { skinIndex = wrap(skinIndex + 1, SKINS.length); saveSkin(); }
-    if (pressed('Space') || pressed('Enter')) { state = 'playing'; return; }
+    if (pressed('ArrowUp') || pressed('ArrowDown')) { giantMode = !giantMode; saveGiant(); }
+    // Al empezar se reinicia la nave para aplicar el modo gigante elegido
+    if (pressed('Space') || pressed('Enter')) { ship.reset(); state = 'playing'; return; }
 
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
@@ -835,7 +856,7 @@ function update(dt) {
         b.dead = true;
         if (b.enemy) { explode(b.x, b.y, 3); continue; }
         a.dead = true;
-        score += POINTS[a.size];
+        score += POINTS[a.size] * (giantMode ? GIANT_FACTOR : 1);
         sfxAsteroid(a.size);
         explode(a.x, a.y, a.size * 5);
         if (Math.random() < 0.15) {
@@ -856,7 +877,7 @@ function update(dt) {
       if (!e.dead && !b.dead && dist(b, e) < e.radius) {
         b.dead = true;
         e.dead = true;
-        score += ENEMY_POINTS;
+        score += ENEMY_POINTS * (giantMode ? GIANT_FACTOR : 1);
         bigExplosion(e.x, e.y);
       }
     }
@@ -869,7 +890,7 @@ function update(dt) {
     for (const b of bullets) {
       if (!b.enemy || b.dead) continue;
       if (ship.shield > 0) {
-        if (dist(b, ship) < SHIELD_RADIUS + b.radius) {
+        if (dist(b, ship) < ship.shieldRadius + b.radius) {
           b.dead = true;
           explode(b.x, b.y, 3);   // chispas del impacto absorbido
         }
@@ -976,6 +997,14 @@ function drawHUD() {
 
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
+
+  // Recordatorio del modo nave gigante activo
+  if (giantMode) {
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font      = '12px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('NAVE GIGANTE · ×2 PUNTOS', W - 14, 44);
+  }
 
   // Indicadores de efectos activos: texto + barra de tiempo restante
   let barY = 48;
@@ -1087,16 +1116,25 @@ function drawSelect() {
 
     ctx.fillStyle = skin.color;
     ctx.font      = 'bold 15px monospace';
-    ctx.fillText(skin.name, x, CY + 78);
+    ctx.fillText(skin.name + (giantMode ? ' ×2' : ''), x, CY + 78);
   });
 
   ctx.fillStyle = 'rgba(255,255,255,0.75)';
   ctx.font      = '15px monospace';
   ctx.fillText(SKINS[skinIndex].desc, W / 2, CY + 118);
 
+  // Estado del modo nave gigante
+  ctx.fillStyle = giantMode ? '#fff' : 'rgba(255,255,255,0.45)';
+  ctx.font      = 'bold 15px monospace';
+  ctx.fillText(
+    giantMode ? 'NAVE GIGANTE: SÍ — ×2 PUNTOS, MÁS FÁCIL DE DESTRUIR'
+              : 'NAVE GIGANTE: NO',
+    W / 2, CY + 142
+  );
+
   ctx.fillStyle = 'rgba(255,255,255,0.5)';
   ctx.font      = '15px monospace';
-  ctx.fillText('← →  CAMBIAR NAVE        ESPACIO / ENTER  JUGAR', W / 2, H - 44);
+  ctx.fillText('← →  CAMBIAR NAVE     ↑ ↓  NAVE GIGANTE     ESPACIO / ENTER  JUGAR', W / 2, H - 44);
 }
 
 function draw() {
@@ -1136,6 +1174,7 @@ function loop(ts) {
 }
 
 loadSkin();
+loadGiant();
 loadMuted();
 enterSelect();
 requestAnimationFrame(loop);
