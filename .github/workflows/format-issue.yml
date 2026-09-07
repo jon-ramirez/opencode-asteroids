@@ -1,0 +1,130 @@
+# Formatea y etiqueta automáticamente cada issue nueva.
+# Conserva el texto original y antepone un bloque de metadatos.
+
+name: Formatear issue
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  formatear:
+    name: Formatear y etiquetar
+    runs-on: ubuntu-latest
+    steps:
+      - name: Formatear cuerpo y asignar labels
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const MARCADOR = '<!-- format-issue -->';
+            const TRIAJE = 'needs-triage';
+
+            // Datos de la issue vía context (nunca interpolando expresiones del
+            // workflow en el script, para evitar inyección de código).
+            const issue = context.payload.issue;
+            const cuerpo = issue.body ?? '';
+            const titulo = issue.title ?? '';
+            const numero = issue.number;
+            const autor = issue.user?.login ?? 'desconocido';
+            const { owner, repo } = context.repo;
+
+            // Idempotencia: en un re-run manual del workflow no se vuelve a formatear.
+            if (cuerpo.includes(MARCADOR)) {
+              core.info('La issue ya estaba formateada; no se hacen cambios.');
+              return;
+            }
+
+            // Clasificación por palabras clave sobre título + cuerpo. Se
+            // normalizan acentos y mayúsculas para robustez.
+            const texto = `${titulo}\n${cuerpo}`
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .toLowerCase();
+
+            const REGLAS = [
+              ['bug', /\bbug\b|error|fallo|falla|no funciona|rot[oa]s?\b|se rompe|rompe|crash|excepcion/],
+              ['enhancement', /feature|mejora|agregar|anadir|anade|nueva funcionalidad|nuevas? (caracteristica|funcion)|sugerencia|propongo|\bidea\b/],
+              ['documentation', /\bdocs?\b|documentacion|documentar|readme/],
+              ['question', /pregunta|duda|consulta|\bcomo\b|question/],
+              ['accessibility', /accesibilidad|a11y|accessibility|lector de pantalla|contraste/],
+            ];
+
+            let labels = REGLAS.filter(([, patron]) => patron.test(texto)).map(([nombre]) => nombre);
+
+            if (labels.length === 0) {
+              labels = [TRIAJE];
+              core.info('Sin coincidencias; se usará la label de triage.');
+            }
+
+            core.info(`Clasificación: ${labels.join(', ')}`);
+
+            // Crea las labels que falten en el repo (p. ej. needs-triage la
+            // primera vez) antes de asignarlas.
+            const existentes = new Set(
+              (await github.paginate(github.rest.issues.listLabelsForRepo, {
+                owner,
+                repo,
+                per_page: 100,
+              })).map((etiqueta) => etiqueta.name)
+            );
+
+            for (const nombre of labels) {
+              if (existentes.has(nombre)) continue;
+              core.info(`Creando la label faltante: ${nombre}`);
+              try {
+                await github.rest.issues.createLabel({
+                  owner,
+                  repo,
+                  name: nombre,
+                  color: 'ededed',
+                  ...(nombre === TRIAJE ? { description: 'Requiere clasificación inicial' } : {}),
+                });
+              } catch (error) {
+                // Otro run en paralelo pudo crearla antes; se ignora.
+                core.info(`No se pudo crear '${nombre}' (¿ya existe?): ${error.message}`);
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              owner,
+              repo,
+              issue_number: numero,
+              labels,
+            });
+
+            // Cuerpo nuevo: metadatos arriba + texto original intacto debajo.
+            const fecha = new Date(issue.created_at).toLocaleString('es-ES', {
+              timeZone: 'UTC',
+              dateStyle: 'long',
+              timeStyle: 'short',
+            });
+
+            const cuerpoNuevo = [
+              MARCADOR,
+              '',
+              '> [!NOTE]',
+              '> Issue formateada automáticamente por el workflow `format-issue`.',
+              '',
+              '| Campo  | Valor |',
+              '| ------ | ----- |',
+              `| Issue  | #${numero} |`,
+              `| Autor  | @${autor} |`,
+              `| Creada | ${fecha} UTC |`,
+              `| Labels | ${labels.map((l) => `\`${l}\``).join(', ')} |`,
+              '',
+              '## Texto original',
+              '',
+              cuerpo,
+            ].join('\n');
+
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: numero,
+              body: cuerpoNuevo,
+            });
+
+            core.info(`Issue #${numero} formateada y etiquetada.`);
